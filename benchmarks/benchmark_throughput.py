@@ -12,6 +12,9 @@ from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
+from transformers import AutoConfig
+from awq.quantize.quantizer import real_quantize_model_weight
+from accelerate import init_empty_weights, load_checkpoint_and_dispatch, infer_auto_device_map, load_checkpoint_in_model
 
 def sample_requests(
     dataset_path: str,
@@ -108,10 +111,42 @@ def run_hf(
     use_beam_search: bool,
     max_batch_size: int,
     trust_remote_code: bool,
+    awq: str = None
 ) -> float:
     assert not use_beam_search
-    llm = AutoModelForCausalLM.from_pretrained(
-        model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
+    if awq is not None:
+        config = AutoConfig.from_pretrained(model)
+
+        q_group_size = 64 if "g64" in awq else 128
+        q_config = {"zero_point": not False, "q_group_size": q_group_size}  # TODO
+        print("Loading pre-computed quantized weights...")
+        with init_empty_weights():
+            llm = AutoModelForCausalLM.from_config(config=config, torch_dtype=torch.float16, trust_remote_code=True)
+        real_quantize_model_weight(llm, w_bit=4, q_config=q_config, init_only=True)
+
+        llm.tie_weights()
+
+        # Infer device map
+        max_memory = f'{40000}MB'
+        n_gpus = torch.cuda.device_count()
+        max_memory = {i: max_memory for i in range(n_gpus)}
+        kwargs = {"max_memory": max_memory} if len(max_memory) else {}
+        device_map = infer_auto_device_map(
+            llm,
+            no_split_module_classes=[
+                "OPTDecoderLayer", "LlamaDecoderLayer", "BloomBlock", "MPTBlock", "DecoderLayer"],
+            **kwargs
+        )
+        # Load checkpoint in the model 
+        load_checkpoint_in_model(
+            llm,
+            checkpoint=awq,
+            device_map=device_map,
+            offload_state_dict=True,
+        )
+    else:
+        llm = AutoModelForCausalLM.from_pretrained(
+            model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
     if llm.config.model_type == "llama":
         # To enable padding in the HF backend.
         tokenizer.pad_token = tokenizer.eos_token
@@ -178,7 +213,7 @@ def main(args: argparse.Namespace):
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
                               args.use_beam_search, args.hf_max_batch_size,
-                              args.trust_remote_code)
+                              args.trust_remote_code, args.awq)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
@@ -230,6 +265,9 @@ if __name__ == "__main__":
         'The "auto" option will use FP16 precision '
         'for FP32 and FP16 models, and BF16 precision '
         'for BF16 models.')
+    parser.add_argument("--awq",
+                        type=str,
+                        default=None)
     args = parser.parse_args()
 
     if args.backend == "vllm":
