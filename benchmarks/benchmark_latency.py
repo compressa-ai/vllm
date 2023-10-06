@@ -72,54 +72,65 @@ def main(args: argparse.Namespace):
             tokenizer.pad_token = tokenizer.eos_token
         llm = llm.cuda()
 
-    sampling_params = SamplingParams(
-        n=args.n,
-        temperature=0.0 if args.use_beam_search else 1.0,
-        top_p=1.0,
-        use_beam_search=args.use_beam_search,
-        ignore_eos=True,
-        max_tokens=args.output_len,
-    )
-    print(sampling_params)
-    dummy_prompt_token_ids = [[1] * args.input_len] * args.batch_size
-    input_ids = torch.Tensor(dummy_prompt_token_ids).to(torch.int).cuda()
+    for output_len in [32, 64, 128, 256, 512]:
+        args.output_len = output_len
+        print(f"output len {args.output_len}")
+        sampling_params = SamplingParams(
+            n=args.n,
+            temperature=0.0 if args.use_beam_search else 1.0,
+            top_p=1.0,
+            use_beam_search=args.use_beam_search,
+            ignore_eos=True,
+            max_tokens=args.output_len,
+        )
+        print(sampling_params)
 
-    def run_to_completion(profile: bool = False, hf=False):
-        if profile:
-            torch.cuda.cudart().cudaProfilerStart()
-        start_time = time.perf_counter()
+        full = 2048
+        for bs in [1, 2, 4, 8, 16, 32]:
+            args.input_len = full // bs
+            args.batch_size = bs
+            print(f"batch size {args.batch_size}")
+            print(f"input len {args.input_len}")
 
-        if not hf:
-            llm.generate(prompt_token_ids=dummy_prompt_token_ids,
-                         sampling_params=sampling_params,
-                         use_tqdm=False)
-        else:
-            llm_outputs = llm.generate(
-                input_ids=input_ids,
-                do_sample=not args.use_beam_search,
-                num_return_sequences=1,
-                temperature=1.0,
-                top_p=1.0,
-                use_cache=True,
-                max_new_tokens=args.output_len,
-            )
-            # Include the decoding time.
-            tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
+            dummy_prompt_token_ids = [[1] * args.input_len] * args.batch_size
+            input_ids = torch.Tensor(dummy_prompt_token_ids).to(torch.int).cuda()
 
-        end_time = time.perf_counter()
-        latency = end_time - start_time
-        if profile:
-            torch.cuda.cudart().cudaProfilerStop()
-        return latency
+            def run_to_completion(profile: bool = False, hf=False):
+                if profile:
+                    torch.cuda.cudart().cudaProfilerStart()
+                start_time = time.perf_counter()
 
-    print("Warming up...")
-    run_to_completion(profile=False, hf=args.hf)
+                if not hf:
+                    llm.generate(prompt_token_ids=dummy_prompt_token_ids,
+                                sampling_params=sampling_params,
+                                use_tqdm=False)
+                else:
+                    llm_outputs = llm.generate(
+                        input_ids=input_ids,
+                        do_sample=not args.use_beam_search,
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        use_cache=True,
+                        max_new_tokens=args.output_len,
+                    )
+                    # Include the decoding time.
+                    tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
 
-    # Benchmark.
-    latencies = []
-    for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
-        latencies.append(run_to_completion(profile=False, hf=args.hf))
-    print(f'Avg latency: {np.mean(latencies)} seconds')
+                end_time = time.perf_counter()
+                latency = end_time - start_time
+                if profile:
+                    torch.cuda.cudart().cudaProfilerStop()
+                return latency
+
+            print("Warming up...")
+            run_to_completion(profile=False, hf=args.hf)
+
+            # Benchmark.
+            latencies = []
+            for _ in tqdm(range(args.num_iters), desc="Profiling iterations"):
+                latencies.append(run_to_completion(profile=False, hf=args.hf))
+            print(f'Avg latency: {np.mean(latencies)} seconds')
 
 
 if __name__ == '__main__':

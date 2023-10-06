@@ -22,12 +22,12 @@ CUDA_VISIBLE_DEVICES=7 python benchmark_throughput.py --backend hf \
 
 CUDA_VISIBLE_DEVICES=7 python benchmark_latency.py  \
 --model /data/shared/CompressaAI/LLaMA/llama-1_2-7_13b/llama-7b \
---batch-size 8 --input-len 256  --hf false \
+--batch-size 8 --input-len 256  \
 --tokenizer hf-internal-testing/llama-tokenizer
 
 CUDA_VISIBLE_DEVICES=7 python benchmark_latency.py  \
 --model /data/shared/CompressaAI/LLaMA/llama-1_2-7_13b/llama-7b-awq \
---batch-size 8 --input-len 256  --hf false -q awq\
+--batch-size 8 --input-len 256  -q awq\
 --tokenizer hf-internal-testing/llama-tokenizer
 
 CUDA_VISIBLE_DEVICES=7 python benchmark_latency.py  \
