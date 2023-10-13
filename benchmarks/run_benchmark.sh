@@ -40,3 +40,9 @@ CUDA_VISIBLE_DEVICES=7 python benchmark_latency.py  \
 --batch-size 8 --input-len 256  --hf true -q awq \
 --awq /data/shared/CompressaAI/LLaMA/llama-1_2-7_13b/quant_cache/llama-7b-w4-g128-awq.pt \
 --tokenizer hf-internal-testing/llama-tokenizer
+
+CUDA_VISIBLE_DEVICES=7 python benchmark_latency.py  \
+--model /data/shared/CompressaAI/LLaMA/llama-1_2-7_13b/llama-7b \
+--batch-size 8 --input-len 256 \
+--cpp /data/shared/CompressaAI/LLaMA/llama-1_2-7_13b/llama-7b-cpp/ggml-model-q4_0.gguf \
+--tokenizer hf-internal-testing/llama-tokenizer

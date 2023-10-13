@@ -1,4 +1,5 @@
 """Benchmark offline inference throughput."""
+from mlc_chat import ChatModule
 import argparse
 import json
 import random
@@ -15,6 +16,8 @@ from vllm.transformers_utils.tokenizer import get_tokenizer
 from transformers import AutoConfig
 from awq.quantize.quantizer import real_quantize_model_weight
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch, infer_auto_device_map, load_checkpoint_in_model
+
+from llama_cpp import Llama
 
 def sample_requests(
     dataset_path: str,
@@ -69,15 +72,19 @@ def run_vllm(
     trust_remote_code: bool,
     dtype: str,
 ) -> float:
-    llm = LLM(
-        model=model,
-        tokenizer=tokenizer,
-        quantization=quantization,
-        tensor_parallel_size=tensor_parallel_size,
-        seed=seed,
-        trust_remote_code=trust_remote_code,
-        dtype=dtype,
-    )
+    if quantization == "oq":
+        llm = ChatModule(model="/home/prutko_a/work/dist/Llama-2-7b-chat-omniquant-w3a16g128asym/params", 
+            lib_path="/home/prutko_a/work/dist/Llama-2-7b-chat-omniquant-w3a16g128asym/Llama-2-7b-chat-omniquant-w3a16g128asym-cuda.so")
+    else:
+        llm = LLM(
+            model=model,
+            tokenizer=tokenizer,
+            quantization=quantization,
+            tensor_parallel_size=tensor_parallel_size,
+            seed=seed,
+            trust_remote_code=trust_remote_code,
+            dtype=dtype,
+        )
 
     # Add the requests to the engine.
     for prompt, _, output_len in requests:
@@ -195,6 +202,44 @@ def run_hf(
     return end - start
 
 
+def run_cpp(
+    requests: List[Tuple[str, int, int]],
+    model: str,
+    tokenizer: PreTrainedTokenizerBase,
+    n: int,
+    use_beam_search: bool,
+    max_batch_size: int,
+    trust_remote_code: bool,
+    cpp: str = None
+) -> float:
+    assert not use_beam_search
+    llm = Llama(model_path=cpp, 
+                # n_gpu_layers=-1, 
+                # n_batch=args.input_len, 
+                n_ctx=1024, 
+                verbose=False)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    pbar = tqdm(total=len(requests))
+    start = time.perf_counter()
+    max_prompt_len = 0
+    max_output_len = 0
+    for i in range(len(requests)):
+        prompt, prompt_len, output_len = requests[i]
+
+        # Generate the sequences.
+        llm_outputs = llm(prompt,
+                          max_tokens=output_len,
+                          temperature=1.0,
+                          top_p=1.0)
+        
+        # Include the decoding time.
+        [_ for _ in llm_outputs]
+        pbar.update(1)
+    end = time.perf_counter()
+    return end - start
+
+
 def main(args: argparse.Namespace):
     print(args)
     random.seed(args.seed)
@@ -214,6 +259,10 @@ def main(args: argparse.Namespace):
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
                               args.use_beam_search, args.hf_max_batch_size,
                               args.trust_remote_code, args.awq)
+    elif args.backend == "cpp":
+        elapsed_time = run_cpp(requests, args.model, tokenizer, args.n,
+                               args.use_beam_search, args.hf_max_batch_size,
+                               args.trust_remote_code, args.cpp)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
@@ -226,7 +275,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the throughput.")
     parser.add_argument("--backend",
                         type=str,
-                        choices=["vllm", "hf"],
+                        choices=["vllm", "hf", "cpp"],
                         default="vllm")
     parser.add_argument("--dataset",
                         type=str,
@@ -265,9 +314,8 @@ if __name__ == "__main__":
         'The "auto" option will use FP16 precision '
         'for FP32 and FP16 models, and BF16 precision '
         'for BF16 models.')
-    parser.add_argument("--awq",
-                        type=str,
-                        default=None)
+    parser.add_argument("--awq", type=str, default=None)
+    parser.add_argument("--cpp", type=str, default=None)
     args = parser.parse_args()
 
     if args.backend == "vllm":
